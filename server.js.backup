@@ -1,0 +1,167 @@
+require('dotenv').config();
+const express = require('express');
+const axios = require('axios');
+
+const app = express();
+app.use(express.json());
+
+// HubSpot API configuration
+const HUBSPOT_API_BASE = 'https://api.hubapi.com';
+const HUBSPOT_TOKEN = process.env.HUBSPOT_TOKEN || process.env.HUBSPOT_API_KEY;
+
+// HubSpot API helper
+const hubspotAPI = axios.create({
+  baseURL: HUBSPOT_API_BASE,
+  headers: {
+    'Authorization': `Bearer ${HUBSPOT_TOKEN}`,
+    'Content-Type': 'application/json'
+  }
+});
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    message: 'HubSpot MCP Proxy Server is running',
+    hasToken: !!HUBSPOT_TOKEN,
+    tokenPreview: HUBSPOT_TOKEN ? `${HUBSPOT_TOKEN.substring(0, 10)}...` : 'not set'
+  });
+});
+
+// Main endpoint for Make.com to call
+app.post('/run-mcp-tool', async (req, res) => {
+  const { tool_name, arguments: toolArgs } = req.body;
+
+  if (!tool_name) {
+    return res.status(400).json({ 
+      error: 'Missing tool_name in request body' 
+    });
+  }
+
+  if (!HUBSPOT_TOKEN) {
+    return res.status(500).json({ 
+      error: 'HUBSPOT_TOKEN environment variable not set' 
+    });
+  }
+
+  let client = null;
+
+  try {
+    // Create SSE transport
+    const transport = new SSEClientTransport(
+      new URL(HUBSPOT_MCP_URL),
+      {
+        headers: {
+          'Authorization': `Bearer ${HUBSPOT_TOKEN}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    // Create MCP client
+    client = new Client({
+      name: 'mcp-proxy-client',
+      version: '1.0.0'
+    }, {
+      capabilities: {}
+    });
+
+    // Connect to HubSpot MCP server
+    await client.connect(transport);
+
+    // List available tools (optional, for debugging)
+    const tools = await client.listTools();
+    console.log('Available tools:', tools.tools.map(t => t.name));
+
+    // Call the requested tool
+    const result = await client.callTool({
+      name: tool_name,
+      arguments: toolArgs || {}
+    });
+
+    // Return the result to Make.com
+    res.json({
+      success: true,
+      tool_name,
+      result: result.content
+    });
+
+  } catch (error) {
+    console.error('Error calling MCP tool:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      details: error.stack
+    });
+  } finally {
+    // Clean up connection
+    if (client) {
+      try {
+        await client.close();
+      } catch (closeError) {
+        console.error('Error closing client:', closeError);
+      }
+    }
+  }
+});
+
+// List available tools endpoint
+app.get('/list-tools', async (req, res) => {
+  if (!HUBSPOT_TOKEN) {
+    return res.status(500).json({ 
+      error: 'HUBSPOT_TOKEN environment variable not set' 
+    });
+  }
+
+  let client = null;
+
+  try {
+    const transport = new SSEClientTransport(
+      new URL(HUBSPOT_MCP_URL),
+      {
+        headers: {
+          'Authorization': `Bearer ${HUBSPOT_TOKEN}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    client = new Client({
+      name: 'mcp-proxy-client',
+      version: '1.0.0'
+    }, {
+      capabilities: {}
+    });
+
+    await client.connect(transport);
+    const tools = await client.listTools();
+
+    res.json({
+      success: true,
+      tools: tools.tools
+    });
+
+  } catch (error) {
+    console.error('Error listing tools:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  } finally {
+    if (client) {
+      try {
+        await client.close();
+      } catch (closeError) {
+        console.error('Error closing client:', closeError);
+      }
+    }
+  }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`MCP Proxy Server running on port ${PORT}`);
+  console.log(`Health check: http://localhost:${PORT}/health`);
+  console.log(`List tools: http://localhost:${PORT}/list-tools`);
+  console.log(`Run tool: POST http://localhost:${PORT}/run-mcp-tool`);
+});
