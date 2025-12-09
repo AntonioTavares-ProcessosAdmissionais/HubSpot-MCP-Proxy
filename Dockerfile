@@ -13,11 +13,11 @@ RUN npm ci --only=production
 # Copy application code
 COPY server.js ./
 
-# Expose port 880
-EXPOSE 880
+# Expose port 8080
+EXPOSE 8080
 
 # Set environment variable for port
-ENV PORT=880
+ENV PORT=8080
 
 # Start the application
 CMD ["node", "server.js"]
